@@ -394,7 +394,13 @@ def _regions(mode, a):
     return (("all", (0x00,), a),)
 
 
-def run_once(rgb):
+def run_once(rgb, on_first_frame=None):
+    """Capture + drive until ffmpeg dies.  Returns the number of frames driven —
+    0 means capture never produced a usable frame (display asleep, or a scanout
+    kmsgrab can't grab, e.g. Desktop Mode's 10-bit XR30 framebuffer).
+
+    on_first_frame() runs once, when the first real frame arrives, letting the
+    caller defer taking the LEDs from HHD until capture is actually working."""
     p = subprocess.Popen(FF, stdout=subprocess.PIPE)
     state = {"buf": None, "alive": True}
 
@@ -424,6 +430,8 @@ def run_once(rgb):
                 time.sleep(0.005)
                 continue
             lastbuf = buf
+            if n == 0 and on_first_frame is not None:
+                on_first_frame()                  # capture works -> now take the rings
             if n % 10 == 0:
                 refresh_cfg()
             mode = CFG["mode"]
@@ -449,6 +457,27 @@ def run_once(rgb):
             p.terminate()
         except Exception:
             pass
+    return n
+
+
+# ---------- don't grab the display before the compositor ----------
+# kmsgrab needs DRM and, at boot, can become DRM master *before* gamescope/KDE —
+# which black-screens the device (the compositor then can't acquire the display).
+# So wait until a compositor already owns it before we capture; then kmsgrab just
+# reads its output (the in-session case that always worked).
+COMPOSITORS = ("gamescope", "kwin_wayland", "kwin_x11", "plasmashell",
+               "gnome-shell", "mutter", "sway", "weston", "Xorg", "Xwayland")
+
+
+def _compositor_up():
+    for name in COMPOSITORS:
+        try:
+            if subprocess.run(["pgrep", "-x", name],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def main():
@@ -456,20 +485,44 @@ def main():
     if not rgb.ok():
         sys.stderr.write("flicker: Aura RGB interface not found (ASUS 0B05, "
                          "usage_page 0xFF31). Is this a ROG Ally running HHD?\n")
-    hhd_rgb_mode("disabled")             # take sole control of the MCU
-    if rgb.ok():
-        rgb.init()
     sticks.start()                       # joystick-driven brightness boost (best-effort)
+    controlled = False                   # True once we've taken the MCU from HHD
+
+    def take_control():
+        # Defer until capture actually works.  The old code disabled HHD and
+        # blacked the rings up front, so any capture failure (e.g. Desktop Mode's
+        # 10-bit scanout, which kmsgrab can't grab) left them stuck dead-black.
+        nonlocal controlled
+        hhd_rgb_mode("disabled")         # take sole control of the MCU
+        if rgb.ok():
+            rgb.init()
+        controlled = True
+
     while True:
+        # Never grab the display before a compositor owns it — at boot, kmsgrab
+        # becoming DRM master before gamescope/KDE black-screens the device.
+        waited = 0
+        while not _compositor_up() and waited < 120:
+            if controlled:                   # release the rings to HHD while we wait
+                hhd_rgb_mode("solid")
+                controlled = False
+            time.sleep(1)
+            waited += 1
         try:
             if not rgb.ok():
                 rgb.path = _find_rgb_hidraw()
-                if rgb.ok():
+                if rgb.ok() and controlled:
                     rgb.init()
-            run_once(rgb)
+            frames = run_once(rgb, None if controlled else take_control)
         except Exception:
-            pass
-        time.sleep(2)                    # ffmpeg died (e.g. display asleep) -> retry
+            frames = 0
+        if frames == 0 and controlled:
+            # Capture stopped producing frames (display asleep, or a scanout we
+            # can't grab) — hand the rings back to HHD rather than leaving them
+            # stuck on black until a capturable scene returns.
+            hhd_rgb_mode("solid")
+            controlled = False
+        time.sleep(2)                    # ffmpeg died / display asleep / mode switch -> retry
 
 
 if __name__ == "__main__":
