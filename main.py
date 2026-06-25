@@ -8,7 +8,7 @@ ENGINE = os.path.join(decky.DECKY_PLUGIN_DIR, "flicker.py")
 SETTINGS_PATH = os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "settings.json")
 PY = "/usr/bin/python3"
 
-DEFAULTS = {"enabled": False, "sat_boost": 1.5, "ema": 0.25, "norm_max": 210, "fps": 20}
+DEFAULTS = {"enabled": False, "mode": "unified", "sat_boost": 1.5, "ema": 0.25, "norm_max": 210, "fps": 20}
 TUNABLE = ("sat_boost", "ema", "norm_max")
 
 
@@ -51,6 +51,7 @@ class Plugin:
 
     def _engine_env(self):
         env = dict(os.environ)
+        env["FLICKER_MODE"] = str(self.settings["mode"])
         env["FLICKER_SAT_BOOST"] = str(self.settings["sat_boost"])
         env["FLICKER_EMA"] = str(self.settings["ema"])
         env["FLICKER_NORM_MAX"] = str(self.settings["norm_max"])
@@ -115,4 +116,10 @@ class Plugin:
         if key in TUNABLE:
             self.settings[key] = value
             self._save()                            # engine picks it up live (FLICKER_CONFIG)
+        return True
+
+    async def set_mode(self, mode):
+        if mode in ("unified", "split", "quad"):
+            self.settings["mode"] = mode
+            self._save()                            # engine switches live (FLICKER_CONFIG)
         return True

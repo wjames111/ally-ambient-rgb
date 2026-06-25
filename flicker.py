@@ -1,36 +1,39 @@
 #!/usr/bin/python3
-"""Flicker — real-time ambient lighting for the ASUS ROG Ally
-(and similar Handheld-Daemon devices).
+"""Flicker — real-time ambient lighting for the ASUS ROG Ally.
 
-Samples the screen, finds the dominant *vivid* color, and drives the
-controller's RGB joystick rings (the emulated DualSense lightbar) to match it
-at ~20 fps.
+Samples the screen, picks the dominant vivid color(s), and drives the
+controller's RGB joystick rings to match, ~20 fps.  Three modes:
 
-Pipeline:
-    ffmpeg kmsgrab (DRM scanout)
-      -> VAAPI GPU detile + downscale to GRID x GRID
-      -> dominant-hue pick (saturation^2 * value weighted histogram)
-      -> vivid-normalize (scale dominant channel up, boost saturation)
-      -> write the lightbar LED sysfs, every frame.
+  unified  one color from the whole screen -> both rings
+  split    left half -> left ring, right half -> right ring
+  quad     each screen corner -> the matching ring half (4 zones)
 
-Runs as root (kmsgrab and the LED sysfs both need it).
+Drives the Ally's Aura RGB MCU directly over HID (per-zone), with Handheld
+Daemon told to stand down — this is what allows independent left/right rings
+(the emulated DualSense lightbar can only show one mirrored color).
+
+Runs as root (kmsgrab and the RGB hidraw both need it).  ROG Ally / Ally X only.
 
 Config via environment variables (all optional):
-    FLICKER_CARD       DRM device for kmsgrab          (default /dev/dri/card1)
-    FLICKER_LED        LED sysfs dir; auto-detected if unset
-    FLICKER_GRID       downscale grid size             (default 48)
-    FLICKER_FPS        capture/update rate             (default 20)
-    FLICKER_EMA        smoothing, new-frame weight     (default 0.25)
-    FLICKER_SAT_BOOST  saturation multiplier           (default 1.5)
-    FLICKER_NORM_MAX   brightness of dominant channel  (default 210)
-    FLICKER_CONFIG     path to a JSON file with live-tunable {sat_boost, ema,
-                       norm_max}; re-read while running (used by the Decky
-                       plugin's sliders). Unset = static env values.
+  FLICKER_MODE       unified | split | quad          (default unified)
+  FLICKER_CARD       DRM device for kmsgrab          (default /dev/dri/card1)
+  FLICKER_GRID       downscale grid size             (default 48)
+  FLICKER_FPS        capture rate                    (default 20)
+  FLICKER_EMA        smoothing, new-frame weight     (default 0.25)
+  FLICKER_SAT_BOOST  saturation multiplier           (default 1.5)
+  FLICKER_NORM_MAX   brightness of dominant channel  (default 210)
+  FLICKER_HIDRAW     override the RGB hidraw path (auto-detected otherwise)
+  FLICKER_CONFIG     live-tuning JSON {mode,sat_boost,ema,norm_max} (Decky plugin)
 
 MIT licensed.  https://github.com/wjames111/flicker
 """
-import os, sys, glob, time, json, colorsys, subprocess, urllib.request
+import os, sys, time, json, colorsys, subprocess, threading, urllib.request
 import numpy as np
+
+try:
+    import hid  # hidapi — used only to locate the Aura RGB interface
+except Exception:
+    hid = None
 
 
 def _env(name, default, cast=str):
@@ -45,10 +48,11 @@ CARD = _env("FLICKER_CARD", "/dev/dri/card1")
 GRID = _env("FLICKER_GRID", 48, int)
 FPS  = _env("FLICKER_FPS", 20, int)
 BINS = 24
-CONFIG = os.environ.get("FLICKER_CONFIG")    # optional live-tuning JSON (Decky plugin)
+CONFIG = os.environ.get("FLICKER_CONFIG")
 
 # Live-tunable params: env sets the initial value; FLICKER_CONFIG overrides at runtime.
 CFG = {
+    "mode":      _env("FLICKER_MODE", "unified"),
     "sat_boost": _env("FLICKER_SAT_BOOST", 1.5, float),
     "ema":       _env("FLICKER_EMA", 0.25, float),
     "norm_max":  _env("FLICKER_NORM_MAX", 210.0, float),
@@ -61,6 +65,8 @@ def refresh_cfg():
     try:
         with open(CONFIG) as f:
             d = json.load(f)
+        if d.get("mode") in ("unified", "split", "quad"):
+            CFG["mode"] = d["mode"]
         for k in ("sat_boost", "ema", "norm_max"):
             if k in d:
                 CFG[k] = float(d[k])
@@ -68,22 +74,19 @@ def refresh_cfg():
         pass
 
 
+# ---------- Handheld Daemon: take / release the RGB ----------
 TOKEN_PATH = "/tmp/hhd/token"
 API = "http://127.0.0.1:5335/api/v1/state"
 
 
 def hhd_rgb_mode(mode):
-    """Ask Handheld Daemon to release ('disabled') or restore ('solid') the
-    LEDs, so this process is the sole writer of the lightbar.  No-op if HHD is
-    not running / no token."""
+    """Ask HHD to release ('disabled') or restore ('solid') the LEDs so we are
+    the sole writer of the MCU.  No-op if HHD isn't running."""
     try:
         tok = open(TOKEN_PATH).read().strip()
         body = {"rgb": {"handheld": {"mode": {"mode": mode}}}}
-        req = urllib.request.Request(
-            API, data=json.dumps(body).encode(),
-            headers={"Authorization": "Bearer " + tok,
-                     "Content-Type": "application/json"},
-            method="POST")
+        req = urllib.request.Request(API, data=json.dumps(body).encode(),
+              headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"}, method="POST")
         urllib.request.urlopen(req, timeout=3).read()
     except Exception:
         pass
@@ -94,38 +97,93 @@ if "--restore" in sys.argv:          # systemd ExecStopPost / Decky stop: hand L
     sys.exit(0)
 
 
-def find_led():
-    """Locate the controller RGB LED sysfs dir.  The input<N> number is
-    kernel-assigned and can change across reboots, so we glob rather than
-    hardcode it."""
-    override = os.environ.get("FLICKER_LED")
-    if override:
-        return override
-    for pat in ("/sys/class/leds/*:rgb:indicator", "/sys/class/leds/*:rgb:*"):
-        c = sorted(glob.glob(pat))
-        if c:
-            return c[0]
-    sys.stderr.write("flicker: no RGB LED found under /sys/class/leds "
-                     "(set FLICKER_LED to the right dir)\n")
-    sys.exit(1)
+# ---------- ROG Ally Aura RGB over HID (per-zone) ----------
+# Protocol mirrors HHD's hhd/device/rog_ally.  Zones: 0x01 left-bottom,
+# 0x02 left-top, 0x03 right-bottom, 0x04 right-top, 0x00 = all rings.
+# Solid command = [0x5A,0xB3,zone,0x00,R,G,B,...].
+ASUS_VID = 0x0B05
+FK = 0x5A
 
 
-LED_DIR = find_led()
-LED = LED_DIR + "/multi_intensity"
-BRT = LED_DIR + "/brightness"
+def _pad(x):
+    return bytes(bytearray(x) + bytearray(64 - len(x)))
 
 
-def set_led(r, g, b):
-    with open(LED, "w") as f:
-        f.write("%d %d %d" % (int(r), int(g), int(b)))
+def _find_rgb_hidraw():
+    ov = os.environ.get("FLICKER_HIDRAW")
+    if ov:
+        return ov
+    if hid is None:
+        return None
+    try:
+        for d in hid.enumerate(ASUS_VID, 0):
+            if d.get("usage_page") == 0xFF31 and d.get("usage") == 0x0080:
+                p = d.get("path")
+                return p.decode() if isinstance(p, (bytes, bytearray)) else p
+    except Exception:
+        pass
+    return None
 
 
+class AllyRGB:
+    INIT   = _pad([FK, 0x41, 0x53, 0x55, 0x53, 0x20, 0x54, 0x65, 0x63, 0x68, 0x2E, 0x49, 0x6E, 0x63, 0x2E])
+    BRIGHT = _pad([FK, 0xBA, 0xC5, 0xC4, 0x03])      # brightness: high
+    SET    = _pad([FK, 0xB5])
+    APPLY  = _pad([FK, 0xB4])
+
+    def __init__(self):
+        self.path = _find_rgb_hidraw()
+        self.fd = None
+
+    def ok(self):
+        return self.path is not None
+
+    def _open(self):
+        if self.fd is None and self.path:
+            self.fd = os.open(self.path, os.O_RDWR)
+
+    def _w(self, b):
+        try:
+            self._open()
+            if self.fd is not None:
+                os.write(self.fd, b)
+        except Exception:
+            # hidraw number may have changed — drop the handle and re-find next time
+            try:
+                if self.fd is not None:
+                    os.close(self.fd)
+            except Exception:
+                pass
+            self.fd = None
+            self.path = _find_rgb_hidraw()
+
+    @staticmethod
+    def _solid(zone, r, g, b):
+        return _pad([FK, 0xB3, zone, 0x00, int(r), int(g), int(b), 0x00, 0x00, 0x00, 0, 0, 0])
+
+    def init(self):
+        for cmd in (self.INIT, self.BRIGHT,
+                    self._solid(0x01, 0, 0, 0), self._solid(0x02, 0, 0, 0),
+                    self._solid(0x03, 0, 0, 0), self._solid(0x04, 0, 0, 0),
+                    self.SET, self.APPLY):
+            self._w(cmd)
+
+    def set_zone(self, zone, r, g, b):              # zone 0x00 = all rings
+        self._w(self._solid(zone, r, g, b))
+
+    def close(self):
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except Exception:
+                pass
+            self.fd = None
+
+
+# ---------- color extraction ----------
 def dominant_color(a):
-    """a:(GRID,GRID,3) float32 0-255 -> the prominent vivid RGB (0-255).
-
-    Bins pixels by hue weighted by saturation^2 * value, takes the heaviest
-    hue bin (+ neighbours) and averages it.  A whole-screen mean comes out a
-    muddy grey; this locks onto the screen's most colorful region instead."""
+    """a:(H,W,3) float32 0-255 -> the prominent vivid RGB (0-255).  Hue
+    histogram weighted by saturation^2 * value; a plain mean is muddy grey."""
     px = a.reshape(-1, 3) / 255.0
     r, g, b = px[:, 0], px[:, 1], px[:, 2]
     mx = px.max(1); mn = px.min(1); diff = mx - mn
@@ -137,8 +195,8 @@ def dominant_color(a):
     h[gm] = ((b[gm] - r[gm]) / diff[gm]) + 2.0
     h[bm] = ((r[bm] - g[bm]) / diff[bm]) + 4.0
     h = (h / 6.0) % 1.0
-    w = (s ** 2) * v                         # prominence = saturation^2 * brightness
-    if w.sum() < 1e-3:                        # near-grey screen: use brightest pixels
+    w = (s ** 2) * v
+    if w.sum() < 1e-3:
         k = max(1, v.size // 10)
         return px[np.argpartition(v, -k)[-k:]].mean(0) * 255
     bi = np.minimum((h * BINS).astype(np.int64), BINS - 1)
@@ -150,9 +208,8 @@ def dominant_color(a):
 
 
 def vivid(col):
-    """Normalize to bright + saturated.  Dim colors render as a muddy teal on
-    the rings (hardware color cast at low PWM), so we always send a vivid
-    value."""
+    """Normalize to bright + saturated — dim colors render as muddy teal on the
+    rings, so never send a dark value."""
     r, g, b = float(col[0]), float(col[1]), float(col[2])
     m = max(r, g, b)
     if m < 1:
@@ -165,42 +222,81 @@ def vivid(col):
     return r * 255, g * 255, b * 255
 
 
+# ---------- capture ----------
 FF = ["ffmpeg", "-hide_banner", "-loglevel", "error",
       "-f", "kmsgrab", "-device", CARD, "-framerate", str(FPS), "-i", "-",
       "-vf", f"hwmap=derive_device=vaapi,scale_vaapi=w={GRID}:h={GRID}:format=nv12,hwdownload,format=nv12",
       "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
 NB = GRID * GRID * 3
-
-try:
-    with open(BRT, "w") as f:
-        f.write("255")
-except Exception:
-    pass
-hhd_rgb_mode("disabled")             # take sole control of the lightbar
+THRESH = 5          # per-channel delta below which a zone isn't rewritten (MCU holds state)
 
 
-def run_once():
+def _regions(mode, a):
+    """[(label, zones, subarray)] for the active mode.  Zones: 0x01 left-bottom,
+    0x02 left-top, 0x03 right-bottom, 0x04 right-top; 0x00 = all."""
+    h = GRID // 2
+    if mode == "quad":
+        return (("lt", (0x02,), a[:h, :h]),   # screen top-left     -> left ring top
+                ("lb", (0x01,), a[h:, :h]),   # screen bottom-left  -> left ring bottom
+                ("rt", (0x04,), a[:h, h:]),   # screen top-right    -> right ring top
+                ("rb", (0x03,), a[h:, h:]))   # screen bottom-right -> right ring bottom
+    if mode == "split":
+        return (("l", (0x01, 0x02), a[:, :h]),
+                ("r", (0x03, 0x04), a[:, h:]))
+    return (("all", (0x00,), a),)
+
+
+def run_once(rgb):
     p = subprocess.Popen(FF, stdout=subprocess.PIPE)
-    ema = None
+    state = {"buf": None, "alive": True}
+
+    def reader():
+        # drain the pipe at ffmpeg's full rate, keeping only the latest frame,
+        # so slow LED writes never back the capture up (which broke the pipe).
+        try:
+            while state["alive"]:
+                b = p.stdout.read(NB)
+                if len(b) < NB:
+                    break
+                state["buf"] = b
+        except Exception:
+            pass
+        finally:
+            state["alive"] = False
+
+    threading.Thread(target=reader, daemon=True).start()
+
+    ema = {}; last = {}; cur_mode = None
+    lastbuf = None
     n = 0
     try:
-        while True:
-            buf = p.stdout.read(NB)
-            if len(buf) < NB:
-                return
-            if n % 10 == 0:              # re-read live config a couple times a second
+        while state["alive"]:
+            buf = state["buf"]
+            if buf is None or buf is lastbuf:     # no new frame yet
+                time.sleep(0.005)
+                continue
+            lastbuf = buf
+            if n % 10 == 0:
                 refresh_cfg()
-            n += 1
+            mode = CFG["mode"]
+            force = (n % 40 == 0) or (mode != cur_mode)   # periodic re-assert + on mode switch
+            if mode != cur_mode:
+                ema = {}; last = {}; cur_mode = mode
             a = np.frombuffer(buf, np.uint8).reshape(GRID, GRID, 3).astype(np.float32)
-            col = dominant_color(a)
-            e = CFG["ema"]
-            ema = col if ema is None else e * col + (1 - e) * ema
-            R, G, B = vivid(ema)
-            try:
-                set_led(R, G, B)         # every frame, to hold against the lightbar default
-            except Exception:
-                pass
+            for key, zones, region in _regions(mode, a):
+                col = dominant_color(region)
+                e = CFG["ema"]
+                ema[key] = col if ema.get(key) is None else e * col + (1 - e) * ema[key]
+                R, G, B = vivid(ema[key])
+                cur = (int(R), int(G), int(B))
+                lk = last.get(key)
+                if force or lk is None or abs(cur[0]-lk[0]) > THRESH or abs(cur[1]-lk[1]) > THRESH or abs(cur[2]-lk[2]) > THRESH:
+                    for z in zones:
+                        rgb.set_zone(z, *cur)
+                    last[key] = cur
+            n += 1
     finally:
+        state["alive"] = False
         try:
             p.terminate()
         except Exception:
@@ -208,9 +304,20 @@ def run_once():
 
 
 def main():
+    rgb = AllyRGB()
+    if not rgb.ok():
+        sys.stderr.write("flicker: Aura RGB interface not found (ASUS 0B05, "
+                         "usage_page 0xFF31). Is this a ROG Ally running HHD?\n")
+    hhd_rgb_mode("disabled")             # take sole control of the MCU
+    if rgb.ok():
+        rgb.init()
     while True:
         try:
-            run_once()
+            if not rgb.ok():
+                rgb.path = _find_rgb_hidraw()
+                if rgb.ok():
+                    rgb.init()
+            run_once(rgb)
         except Exception:
             pass
         time.sleep(2)                    # ffmpeg died (e.g. display asleep) -> retry

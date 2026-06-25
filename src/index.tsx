@@ -3,6 +3,7 @@ import {
   PanelSectionRow,
   ToggleField,
   SliderField,
+  DropdownItem,
   staticClasses,
 } from "@decky/ui";
 import { callable, definePlugin } from "@decky/api";
@@ -11,6 +12,7 @@ import { FaLightbulb } from "react-icons/fa";
 
 interface Settings {
   enabled: boolean;
+  mode: "unified" | "split" | "quad";
   sat_boost: number;
   ema: number;
   norm_max: number;
@@ -21,10 +23,12 @@ const stopEngine = callable<[], boolean>("stop");
 const isRunning = callable<[], boolean>("is_running");
 const getSettings = callable<[], Settings>("get_settings");
 const setSetting = callable<[key: string, value: number], boolean>("set_setting");
+const setMode = callable<[mode: string], boolean>("set_mode");
 
 function Content() {
   const [ready, setReady] = useState(false);
   const [on, setOn] = useState(false);
+  const [mode, setModeState] = useState<string>("unified");
   const [sat, setSat] = useState(1.5);
   const [ema, setEma] = useState(0.25);
   const [bright, setBright] = useState(210);
@@ -32,6 +36,7 @@ function Content() {
   useEffect(() => {
     (async () => {
       const s = await getSettings();
+      setModeState(s.mode);
       setSat(s.sat_boost);
       setEma(s.ema);
       setBright(s.norm_max);
@@ -57,6 +62,22 @@ function Content() {
           description="Rings follow the dominant color on screen"
           checked={on}
           onChange={toggle}
+        />
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <DropdownItem
+          label="Mode"
+          rgOptions={[
+            { data: "unified", label: "Unified (whole screen)" },
+            { data: "split", label: "Split (left / right)" },
+            { data: "quad", label: "Quad (four corners)" },
+          ]}
+          selectedOption={mode}
+          disabled={!ready}
+          onChange={(opt) => {
+            setModeState(opt.data as string);
+            setMode(opt.data as string);
+          }}
         />
       </PanelSectionRow>
       <PanelSectionRow>
