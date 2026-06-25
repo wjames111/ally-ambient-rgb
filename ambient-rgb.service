@@ -1,0 +1,19 @@
+[Unit]
+Description=ally-ambient-rgb (screen color -> controller RGB rings)
+After=hhd.service
+Wants=hhd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/ally-ambient-rgb/ambient_rgb.py
+# Hand the LEDs back to Handheld Daemon when the service stops:
+ExecStopPost=/usr/bin/python3 /opt/ally-ambient-rgb/ambient_rgb.py --restore
+Restart=always
+RestartSec=5
+# Optional tuning (uncomment / edit, then: sudo systemctl daemon-reload && restart):
+# Environment=AMBIENT_SAT_BOOST=1.6
+# Environment=AMBIENT_EMA=0.20
+# Environment=AMBIENT_NORM_MAX=210
+
+[Install]
+WantedBy=multi-user.target
