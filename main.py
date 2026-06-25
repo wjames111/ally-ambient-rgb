@@ -4,7 +4,7 @@ import subprocess
 
 import decky
 
-ENGINE = os.path.join(decky.DECKY_PLUGIN_DIR, "ambient_rgb.py")
+ENGINE = os.path.join(decky.DECKY_PLUGIN_DIR, "flicker.py")
 SETTINGS_PATH = os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "settings.json")
 PY = "/usr/bin/python3"
 
@@ -20,14 +20,14 @@ class Plugin:
     async def _main(self):
         self.proc = None
         self.settings = self._load()
-        decky.logger.info("ally-ambient-rgb loaded (enabled=%s)" % self.settings.get("enabled"))
+        decky.logger.info("flicker loaded (enabled=%s)" % self.settings.get("enabled"))
         if self.settings.get("enabled"):
             await self.start()
 
     async def _unload(self):
         self._kill()
         self._restore()
-        decky.logger.info("ally-ambient-rgb unloaded")
+        decky.logger.info("flicker unloaded")
 
     async def _uninstall(self):
         self._kill()
@@ -51,11 +51,11 @@ class Plugin:
 
     def _engine_env(self):
         env = dict(os.environ)
-        env["AMBIENT_SAT_BOOST"] = str(self.settings["sat_boost"])
-        env["AMBIENT_EMA"] = str(self.settings["ema"])
-        env["AMBIENT_NORM_MAX"] = str(self.settings["norm_max"])
-        env["AMBIENT_FPS"] = str(int(self.settings["fps"]))
-        env["AMBIENT_CONFIG"] = SETTINGS_PATH      # engine re-reads this live for the sliders
+        env["FLICKER_SAT_BOOST"] = str(self.settings["sat_boost"])
+        env["FLICKER_EMA"] = str(self.settings["ema"])
+        env["FLICKER_NORM_MAX"] = str(self.settings["norm_max"])
+        env["FLICKER_FPS"] = str(int(self.settings["fps"]))
+        env["FLICKER_CONFIG"] = SETTINGS_PATH      # engine re-reads this live for the sliders
         return env
 
     def _running(self):
@@ -114,5 +114,5 @@ class Plugin:
     async def set_setting(self, key, value):
         if key in TUNABLE:
             self.settings[key] = value
-            self._save()                            # engine picks it up live (AMBIENT_CONFIG)
+            self._save()                            # engine picks it up live (FLICKER_CONFIG)
         return True

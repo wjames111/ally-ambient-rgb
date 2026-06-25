@@ -1,4 +1,4 @@
-# ally-ambient-rgb
+# Flicker
 
 **Real-time ambient lighting for the ASUS ROG Ally** (and similar
 [Handheld Daemon](https://github.com/hhd-dev/hhd) devices running Bazzite /
@@ -39,32 +39,32 @@ Once it's in the [Decky](https://decky.xyz/) store, install it from the in-Game-
 store. To build and sideload it now:
 
 ```bash
-git clone https://github.com/wjames111/ally-ambient-rgb.git
-cd ally-ambient-rgb
+git clone https://github.com/wjames111/flicker.git
+cd flicker
 pnpm i && pnpm build          # needs Node 18+ and pnpm v9
 # copy the built plugin into Decky's plugins dir (root) and restart Decky:
-PLUGIN=~/homebrew/plugins/ally-ambient-rgb
+PLUGIN=~/homebrew/plugins/flicker
 sudo mkdir -p "$PLUGIN"
-sudo cp -r plugin.json package.json main.py ambient_rgb.py dist "$PLUGIN"/
+sudo cp -r plugin.json package.json main.py flicker.py dist "$PLUGIN"/
 sudo systemctl restart plugin_loader
 ```
 
-Then open the **Decky** menu in Game Mode → **Ally Ambient RGB** → toggle it on.
+Then open the **Decky** menu in Game Mode → **Flicker** → toggle it on.
 The panel has sliders for **Vividness**, **Reactivity**, and **Brightness** that
 tune it live.
 
 ## Install — standalone (no Decky)
 
 ```bash
-git clone https://github.com/wjames111/ally-ambient-rgb.git
-cd ally-ambient-rgb
+git clone https://github.com/wjames111/flicker.git
+cd flicker
 ./install.sh                  # installs to /opt, enables a systemd service
 ```
 
 ```bash
-sudo systemctl stop  ambient-rgb     # off → your normal HHD RGB is restored automatically
-sudo systemctl start ambient-rgb     # on
-journalctl -u ambient-rgb -f         # logs
+sudo systemctl stop  flicker     # off → your normal HHD RGB is restored automatically
+sudo systemctl start flicker     # on
+journalctl -u flicker -f         # logs
 ```
 
 ## Requirements
@@ -81,17 +81,17 @@ On Bazzite these are generally already present.
 ## Configuration (standalone)
 
 Set these env vars in the `[Service]` block of
-`/etc/systemd/system/ambient-rgb.service`, then `daemon-reload` + restart:
+`/etc/systemd/system/flicker.service`, then `daemon-reload` + restart:
 
 | Variable            | Default          | Meaning                                  |
 |---------------------|------------------|------------------------------------------|
-| `AMBIENT_SAT_BOOST` | `1.5`            | Saturation multiplier (vividness)        |
-| `AMBIENT_EMA`       | `0.25`           | Smoothing — lower = smoother/slower      |
-| `AMBIENT_NORM_MAX`  | `210`            | Brightness of the dominant channel       |
-| `AMBIENT_FPS`       | `20`             | Capture / update rate                    |
-| `AMBIENT_GRID`      | `48`             | Downscale grid size                      |
-| `AMBIENT_CARD`      | `/dev/dri/card1` | DRM device for capture                   |
-| `AMBIENT_LED`       | *(auto)*         | LED sysfs dir, if auto-detect picks wrong|
+| `FLICKER_SAT_BOOST` | `1.5`            | Saturation multiplier (vividness)        |
+| `FLICKER_EMA`       | `0.25`           | Smoothing — lower = smoother/slower      |
+| `FLICKER_NORM_MAX`  | `210`            | Brightness of the dominant channel       |
+| `FLICKER_FPS`       | `20`             | Capture / update rate                    |
+| `FLICKER_GRID`      | `48`             | Downscale grid size                      |
+| `FLICKER_CARD`      | `/dev/dri/card1` | DRM device for capture                   |
+| `FLICKER_LED`       | *(auto)*         | LED sysfs dir, if auto-detect picks wrong|
 
 (The Decky plugin exposes Vividness / Reactivity / Brightness as live sliders.)
 

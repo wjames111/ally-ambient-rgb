@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""ally-ambient-rgb — real-time ambient lighting for the ASUS ROG Ally
+"""Flicker — real-time ambient lighting for the ASUS ROG Ally
 (and similar Handheld-Daemon devices).
 
 Samples the screen, finds the dominant *vivid* color, and drives the
@@ -16,18 +16,18 @@ Pipeline:
 Runs as root (kmsgrab and the LED sysfs both need it).
 
 Config via environment variables (all optional):
-    AMBIENT_CARD       DRM device for kmsgrab          (default /dev/dri/card1)
-    AMBIENT_LED        LED sysfs dir; auto-detected if unset
-    AMBIENT_GRID       downscale grid size             (default 48)
-    AMBIENT_FPS        capture/update rate             (default 20)
-    AMBIENT_EMA        smoothing, new-frame weight     (default 0.25)
-    AMBIENT_SAT_BOOST  saturation multiplier           (default 1.5)
-    AMBIENT_NORM_MAX   brightness of dominant channel  (default 210)
-    AMBIENT_CONFIG     path to a JSON file with live-tunable {sat_boost, ema,
+    FLICKER_CARD       DRM device for kmsgrab          (default /dev/dri/card1)
+    FLICKER_LED        LED sysfs dir; auto-detected if unset
+    FLICKER_GRID       downscale grid size             (default 48)
+    FLICKER_FPS        capture/update rate             (default 20)
+    FLICKER_EMA        smoothing, new-frame weight     (default 0.25)
+    FLICKER_SAT_BOOST  saturation multiplier           (default 1.5)
+    FLICKER_NORM_MAX   brightness of dominant channel  (default 210)
+    FLICKER_CONFIG     path to a JSON file with live-tunable {sat_boost, ema,
                        norm_max}; re-read while running (used by the Decky
                        plugin's sliders). Unset = static env values.
 
-MIT licensed.  https://github.com/wjames111/ally-ambient-rgb
+MIT licensed.  https://github.com/wjames111/flicker
 """
 import os, sys, glob, time, json, colorsys, subprocess, urllib.request
 import numpy as np
@@ -41,17 +41,17 @@ def _env(name, default, cast=str):
         return default
 
 
-CARD = _env("AMBIENT_CARD", "/dev/dri/card1")
-GRID = _env("AMBIENT_GRID", 48, int)
-FPS  = _env("AMBIENT_FPS", 20, int)
+CARD = _env("FLICKER_CARD", "/dev/dri/card1")
+GRID = _env("FLICKER_GRID", 48, int)
+FPS  = _env("FLICKER_FPS", 20, int)
 BINS = 24
-CONFIG = os.environ.get("AMBIENT_CONFIG")    # optional live-tuning JSON (Decky plugin)
+CONFIG = os.environ.get("FLICKER_CONFIG")    # optional live-tuning JSON (Decky plugin)
 
-# Live-tunable params: env sets the initial value; AMBIENT_CONFIG overrides at runtime.
+# Live-tunable params: env sets the initial value; FLICKER_CONFIG overrides at runtime.
 CFG = {
-    "sat_boost": _env("AMBIENT_SAT_BOOST", 1.5, float),
-    "ema":       _env("AMBIENT_EMA", 0.25, float),
-    "norm_max":  _env("AMBIENT_NORM_MAX", 210.0, float),
+    "sat_boost": _env("FLICKER_SAT_BOOST", 1.5, float),
+    "ema":       _env("FLICKER_EMA", 0.25, float),
+    "norm_max":  _env("FLICKER_NORM_MAX", 210.0, float),
 }
 
 
@@ -98,15 +98,15 @@ def find_led():
     """Locate the controller RGB LED sysfs dir.  The input<N> number is
     kernel-assigned and can change across reboots, so we glob rather than
     hardcode it."""
-    override = os.environ.get("AMBIENT_LED")
+    override = os.environ.get("FLICKER_LED")
     if override:
         return override
     for pat in ("/sys/class/leds/*:rgb:indicator", "/sys/class/leds/*:rgb:*"):
         c = sorted(glob.glob(pat))
         if c:
             return c[0]
-    sys.stderr.write("ally-ambient-rgb: no RGB LED found under /sys/class/leds "
-                     "(set AMBIENT_LED to the right dir)\n")
+    sys.stderr.write("flicker: no RGB LED found under /sys/class/leds "
+                     "(set FLICKER_LED to the right dir)\n")
     sys.exit(1)
 
 

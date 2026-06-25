@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Install ally-ambient-rgb as a system service.  Needs sudo.
+# Install flicker as a system service.  Needs sudo.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-PREFIX=/opt/ally-ambient-rgb
-UNIT=/etc/systemd/system/ambient-rgb.service
+PREFIX=/opt/flicker
+UNIT=/etc/systemd/system/flicker.service
 
 echo ">> Installing to $PREFIX (requires sudo)…"
-sudo install -Dm755 ambient_rgb.py "$PREFIX/ambient_rgb.py"
-sudo install -Dm644 ambient-rgb.service "$UNIT"
+sudo install -Dm755 flicker.py "$PREFIX/flicker.py"
+sudo install -Dm644 flicker.service "$UNIT"
 
 echo ">> Enabling + starting the service…"
 sudo systemctl daemon-reload
-sudo systemctl enable --now ambient-rgb.service
+sudo systemctl enable --now flicker.service
 
 echo
-echo ">> Done.  ally-ambient-rgb is running and will start on every boot."
-echo "   stop:    sudo systemctl stop ambient-rgb     (restores your normal RGB)"
-echo "   start:   sudo systemctl start ambient-rgb"
-echo "   status:  systemctl status ambient-rgb"
-echo "   logs:    journalctl -u ambient-rgb -f"
+echo ">> Done.  flicker is running and will start on every boot."
+echo "   stop:    sudo systemctl stop flicker     (restores your normal RGB)"
+echo "   start:   sudo systemctl start flicker"
+echo "   status:  systemctl status flicker"
+echo "   logs:    journalctl -u flicker -f"

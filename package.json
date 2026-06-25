@@ -1,5 +1,5 @@
 {
-  "name": "ally-ambient-rgb",
+  "name": "flicker",
   "version": "1.0.0",
   "description": "Real-time ambient lighting — the controller's RGB joystick rings follow the dominant color on screen.",
   "type": "module",
@@ -9,7 +9,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/wjames111/ally-ambient-rgb.git"
+    "url": "git+https://github.com/wjames111/flicker.git"
   },
   "keywords": [
     "decky",
@@ -24,9 +24,9 @@
   "author": "William James",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/wjames111/ally-ambient-rgb/issues"
+    "url": "https://github.com/wjames111/flicker/issues"
   },
-  "homepage": "https://github.com/wjames111/ally-ambient-rgb#readme",
+  "homepage": "https://github.com/wjames111/flicker#readme",
   "devDependencies": {
     "@decky/rollup": "^1.0.2",
     "@decky/ui": "^4.11.0",

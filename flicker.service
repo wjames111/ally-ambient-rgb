@@ -1,0 +1,19 @@
+[Unit]
+Description=flicker (screen color -> controller RGB rings)
+After=hhd.service
+Wants=hhd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/flicker/flicker.py
+# Hand the LEDs back to Handheld Daemon when the service stops:
+ExecStopPost=/usr/bin/python3 /opt/flicker/flicker.py --restore
+Restart=always
+RestartSec=5
+# Optional tuning (uncomment / edit, then: sudo systemctl daemon-reload && restart):
+# Environment=FLICKER_SAT_BOOST=1.6
+# Environment=FLICKER_EMA=0.20
+# Environment=FLICKER_NORM_MAX=210
+
+[Install]
+WantedBy=multi-user.target

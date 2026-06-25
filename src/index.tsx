@@ -109,8 +109,8 @@ function Content() {
 }
 
 export default definePlugin(() => ({
-  name: "Ally Ambient RGB",
-  titleView: <div className={staticClasses.Title}>Ally Ambient RGB</div>,
+  name: "Flicker",
+  titleView: <div className={staticClasses.Title}>Flicker</div>,
   content: <Content />,
   icon: <FaLightbulb />,
   onDismount() {},
