@@ -47,10 +47,9 @@ Two details that make it robust:
 - Flicker tells **Handheld Daemon to release the LEDs** while it runs, so it's
   the sole writer of the RGB MCU, then hands them back when it stops.
 
-## Install — Decky plugin (recommended)
+## Install — Decky plugin
 
-Once it's in the [Decky](https://decky.xyz/) store, install it from the
-in-Game-Mode store. To build and sideload it now:
+Build and sideload it:
 
 ```bash
 git clone https://github.com/wjames111/flicker.git
@@ -59,12 +58,21 @@ pnpm i && pnpm build          # needs Node 18+ and pnpm v9
 PLUGIN=~/homebrew/plugins/flicker
 sudo mkdir -p "$PLUGIN"
 sudo cp -r plugin.json package.json main.py flicker.py dist "$PLUGIN"/
+sudo ./decky-setup.sh         # one-time: installs the polkit rule (see below)
 sudo systemctl restart plugin_loader
 ```
 
 Then open the **Decky** menu in Game Mode → **Flicker**, turn it on, and pick a
 **Mode** (Unified / Split / Quad). The panel also has live **Vividness**,
 **Reactivity**, and **Brightness** sliders.
+
+**Why the setup step:** Decky runs plugins as root but with *zero* Linux
+capabilities, and screen capture (kmsgrab) needs `CAP_SYS_ADMIN`. So the plugin
+runs the capture engine as a transient **systemd** unit (which gets full caps),
+and `decky-setup.sh` installs a small polkit rule letting the plugin manage just
+that one unit. This is also why Flicker isn't a one-click Decky-*store* plugin —
+a store install can't grant capture permissions. The **standalone** option below
+needs none of this.
 
 ## Install — standalone (no Decky)
 

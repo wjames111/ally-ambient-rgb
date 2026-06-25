@@ -8,29 +8,34 @@ ENGINE = os.path.join(decky.DECKY_PLUGIN_DIR, "flicker.py")
 SETTINGS_PATH = os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "settings.json")
 PY = "/usr/bin/python3"
 
-DEFAULTS = {"enabled": False, "mode": "unified", "sat_boost": 1.5, "ema": 0.25, "norm_max": 210, "fps": 20}
-TUNABLE = ("sat_boost", "ema", "norm_max")
+# The engine runs as a transient systemd unit, NOT as a child of this backend.
+# Decky sandboxes plugins with zero capabilities (CapEff=0) even as root, but
+# kmsgrab needs CAP_SYS_ADMIN — so a direct subprocess can't capture. systemd-run
+# gives the engine full root caps and a clean library environment (which also
+# sidesteps Decky's leaked PyInstaller LD_LIBRARY_PATH that breaks ffmpeg's libssl).
+UNIT = "flicker-engine"
+
+DEFAULTS = {"enabled": False, "mode": "unified", "sat_boost": 1.5, "ema": 0.25, "norm_max": 235, "floor": 100, "fps": 20}
+TUNABLE = ("sat_boost", "ema", "norm_max", "floor")
 
 
 class Plugin:
-    proc = None
     settings = dict(DEFAULTS)
 
     # ---------- lifecycle ----------
     async def _main(self):
-        self.proc = None
         self.settings = self._load()
         decky.logger.info("flicker loaded (enabled=%s)" % self.settings.get("enabled"))
         if self.settings.get("enabled"):
             await self.start()
 
     async def _unload(self):
-        self._kill()
+        self._stop_unit()
         self._restore()
         decky.logger.info("flicker unloaded")
 
     async def _uninstall(self):
-        self._kill()
+        self._stop_unit()
         self._restore()
 
     # ---------- helpers ----------
@@ -49,62 +54,68 @@ class Plugin:
         except Exception as e:
             decky.logger.error("save failed: %s" % e)
 
-    def _engine_env(self):
+    def _clean_env(self):
+        # Decky leaks its PyInstaller LD_LIBRARY_PATH (/tmp/_MEI…); strip it so the
+        # system binaries we invoke (systemd-run, systemctl, python) load the right
+        # libs instead of Decky's bundled ones ("OPENSSL_… not found").
         env = dict(os.environ)
-        env["FLICKER_MODE"] = str(self.settings["mode"])
-        env["FLICKER_SAT_BOOST"] = str(self.settings["sat_boost"])
-        env["FLICKER_EMA"] = str(self.settings["ema"])
-        env["FLICKER_NORM_MAX"] = str(self.settings["norm_max"])
-        env["FLICKER_FPS"] = str(int(self.settings["fps"]))
-        env["FLICKER_CONFIG"] = SETTINGS_PATH      # engine re-reads this live for the sliders
+        orig = env.pop("LD_LIBRARY_PATH_ORIG", None)
+        if orig is not None:
+            env["LD_LIBRARY_PATH"] = orig
+        else:
+            env.pop("LD_LIBRARY_PATH", None)
+        env.pop("LD_PRELOAD", None)
         return env
 
-    def _running(self):
-        return self.proc is not None and self.proc.poll() is None
+    def _setenv_args(self):
+        kv = {
+            "FLICKER_MODE": str(self.settings["mode"]),
+            "FLICKER_SAT_BOOST": str(self.settings["sat_boost"]),
+            "FLICKER_EMA": str(self.settings["ema"]),
+            "FLICKER_NORM_MAX": str(self.settings["norm_max"]),
+            "FLICKER_FLOOR": str(self.settings.get("floor", 100)),
+            "FLICKER_FPS": str(int(self.settings["fps"])),
+            "FLICKER_CONFIG": SETTINGS_PATH,        # engine re-reads this live for the sliders
+        }
+        return ["--setenv=%s=%s" % (k, v) for k, v in kv.items()]
 
-    def _kill(self):
-        if self.proc is None:
-            return
-        try:
-            if self.proc.poll() is None:
-                self.proc.terminate()
-                try:
-                    self.proc.wait(timeout=3)
-                except Exception:
-                    self.proc.kill()
-        except Exception as e:
-            decky.logger.error("kill failed: %s" % e)
-        self.proc = None
+    def _stop_unit(self):
+        for args in (["stop", UNIT], ["reset-failed", UNIT]):
+            try:
+                subprocess.run(["systemctl"] + args, timeout=8, env=self._clean_env(),
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
 
     def _restore(self):
         # hand the LEDs back to Handheld Daemon
         try:
-            subprocess.run([PY, ENGINE, "--restore"], timeout=5,
+            subprocess.run([PY, ENGINE, "--restore"], timeout=5, env=self._clean_env(),
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             decky.logger.error("restore failed: %s" % e)
 
     # ---------- callable from the frontend ----------
     async def start(self):
-        self._kill()
+        self._stop_unit()
         self.settings["enabled"] = True
-        self._save()                                # write before spawn so the engine sees it
+        self._save()                                # write before launch so the engine sees it
         try:
-            # Route the engine's stdout/stderr to a logfile instead of /dev/null,
-            # so import errors and "RGB interface not found" are actually visible.
-            logpath = os.path.join(decky.DECKY_PLUGIN_LOG_DIR, "engine.log")
-            log = open(logpath, "a")
-            self.proc = subprocess.Popen([PY, ENGINE], env=self._engine_env(),
-                                         stdout=log, stderr=subprocess.STDOUT)
-            log.close()                             # the child keeps its own copy of the fd
-            decky.logger.info("engine started (pid=%s); output -> %s" % (self.proc.pid, logpath))
+            cmd = ["systemd-run", "--unit=" + UNIT, "--collect",
+                   *self._setenv_args(), PY, ENGINE]
+            r = subprocess.run(cmd, timeout=10, env=self._clean_env(),
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            if r.returncode != 0:
+                decky.logger.error("systemd-run failed: %s" % r.stderr.decode(errors="replace").strip())
+                return False
+            decky.logger.info("engine started as %s.service" % UNIT)
             return True
         except Exception as e:
             decky.logger.error("start failed: %s" % e)
             return False
 
     async def stop(self):
-        self._kill()
+        self._stop_unit()
         self._restore()
         self.settings["enabled"] = False
         self._save()
@@ -112,11 +123,13 @@ class Plugin:
         return True
 
     async def is_running(self):
-        # Surface an engine that started but died (e.g. a missing dependency) so
-        # it doesn't silently look "on"; the reason is in engine.log.
-        if self.proc is not None and self.proc.poll() is not None and self.settings.get("enabled"):
-            decky.logger.error("engine exited (code=%s); see engine.log" % self.proc.returncode)
-        return self._running()
+        # journalctl -u flicker-engine has the engine's output if anything's wrong.
+        try:
+            r = subprocess.run(["systemctl", "is-active", UNIT], timeout=5, env=self._clean_env(),
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            return r.stdout.strip() == b"active"
+        except Exception:
+            return False
 
     async def get_settings(self):
         return self.settings
