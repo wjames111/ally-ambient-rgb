@@ -40,6 +40,12 @@ ring. Brightness follows the scene — bright scenes glow bright, dark scenes di
 to a low bias-light floor instead of switching off — and the result is smoothed
 over time, then written to the matching **Aura RGB zone** on the MCU over HID.
 
+On top of that, a background thread reads the analog sticks straight from evdev
+and **flares the matching ring brighter the harder you push** — left stick → left
+ring, right stick → right ring (both in unified mode). It's best-effort: if no
+gamepad is readable, the deflection stays zero and nothing changes. Tune it with
+`FLICKER_STICK` / the **Joystick boost** slider (`0` turns it off).
+
 Two details that make it robust:
 
 - A **reader thread** drains the capture pipe at full rate (keeping only the
@@ -64,7 +70,7 @@ sudo systemctl restart plugin_loader
 
 Then open the **Decky** menu in Game Mode → **Flicker**, turn it on, and pick a
 **Mode** (Unified / Split / Quad). The panel also has live **Vividness**,
-**Reactivity**, and **Brightness** sliders.
+**Reactivity**, **Brightness**, and **Joystick boost** sliders.
 
 **Why the setup step:** Decky runs plugins as root but with *zero* Linux
 capabilities, and screen capture (kmsgrab) needs `CAP_SYS_ADMIN`. So the plugin
@@ -111,12 +117,13 @@ Set these env vars in the `[Service]` block of
 | `FLICKER_EMA`       | `0.25`           | Smoothing — lower = smoother/slower       |
 | `FLICKER_NORM_MAX`  | `235`            | Max brightness (when the scene is bright) |
 | `FLICKER_FLOOR`     | `100`            | Bias-light floor (dark scenes; never off) |
+| `FLICKER_STICK`     | `0.4`            | Joystick brightness boost, `0..1` (`0` = off) |
 | `FLICKER_FPS`       | `20`             | Capture / update rate                     |
 | `FLICKER_GRID`      | `48`             | Downscale grid size                       |
 | `FLICKER_CARD`      | `/dev/dri/card1` | DRM device for capture                    |
 | `FLICKER_HIDRAW`    | *(auto)*         | RGB hidraw path, if auto-detect picks wrong |
 
-(The Decky plugin exposes Mode + Vividness / Reactivity / Brightness live.)
+(The Decky plugin exposes Mode + Vividness / Reactivity / Brightness / Joystick boost live.)
 
 ## Notes / gotchas
 

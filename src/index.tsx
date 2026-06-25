@@ -16,6 +16,7 @@ interface Settings {
   sat_boost: number;
   ema: number;
   norm_max: number;
+  stick_gain: number;
 }
 
 const startEngine = callable<[], boolean>("start");
@@ -32,6 +33,7 @@ function Content() {
   const [sat, setSat] = useState(1.5);
   const [ema, setEma] = useState(0.25);
   const [bright, setBright] = useState(210);
+  const [stick, setStick] = useState(0.4);
 
   useEffect(() => {
     (async () => {
@@ -40,6 +42,7 @@ function Content() {
       setSat(s.sat_boost);
       setEma(s.ema);
       setBright(s.norm_max);
+      setStick(s.stick_gain);
       setOn(await isRunning());
       setReady(true);
     })();
@@ -122,6 +125,22 @@ function Content() {
           onChange={(v) => {
             setBright(v);
             setSetting("norm_max", v);
+          }}
+        />
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <SliderField
+          label="Joystick boost"
+          description="Rings flare brighter as you push the sticks (0 = off)"
+          value={stick}
+          min={0}
+          max={1}
+          step={0.05}
+          showValue
+          disabled={!ready}
+          onChange={(v) => {
+            setStick(v);
+            setSetting("stick_gain", v);
           }}
         />
       </PanelSectionRow>

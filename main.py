@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import subprocess
 
 import decky
@@ -15,8 +16,25 @@ PY = "/usr/bin/python3"
 # sidesteps Decky's leaked PyInstaller LD_LIBRARY_PATH that breaks ffmpeg's libssl).
 UNIT = "flicker-engine"
 
-DEFAULTS = {"enabled": False, "mode": "unified", "sat_boost": 1.5, "ema": 0.25, "norm_max": 235, "floor": 100, "fps": 20}
-TUNABLE = ("sat_boost", "ema", "norm_max", "floor")
+# polkit rule letting this (capability-stripped) plugin manage just the capture
+# unit. Installed once by decky-setup.sh — the plugin itself CAN'T write it (Decky's
+# sandbox denies /etc/polkit-1 with EACCES; its "root" isn't real-root for system
+# files), so _ensure_polkit below is only a best-effort attempt + a fallback hint.
+POLKIT_RULE = "/etc/polkit-1/rules.d/10-flicker.rules"
+POLKIT_CONTENT = (
+    "// Flicker: allow the capability-stripped Decky plugin to manage its capture unit.\n"
+    "polkit.addRule(function(action, subject) {\n"
+    '    if (action.id == "org.freedesktop.systemd1.manage-units") {\n'
+    '        var unit = action.lookup("unit") || action.lookup("name") || "";\n'
+    '        if (unit == "flicker-engine.service") {\n'
+    "            return polkit.Result.YES;\n"
+    "        }\n"
+    "    }\n"
+    "});\n"
+)
+
+DEFAULTS = {"enabled": False, "mode": "unified", "sat_boost": 1.5, "ema": 0.25, "norm_max": 235, "floor": 100, "fps": 20, "stick_gain": 0.4}
+TUNABLE = ("sat_boost", "ema", "norm_max", "floor", "stick_gain")
 
 
 class Plugin:
@@ -25,6 +43,7 @@ class Plugin:
     # ---------- lifecycle ----------
     async def _main(self):
         self.settings = self._load()
+        self._ensure_polkit()
         decky.logger.info("flicker loaded (enabled=%s)" % self.settings.get("enabled"))
         if self.settings.get("enabled"):
             await self.start()
@@ -67,6 +86,19 @@ class Plugin:
         env.pop("LD_PRELOAD", None)
         return env
 
+    def _ensure_polkit(self):
+        # Best-effort: only attempt if the rule is missing. Decky's sandbox usually
+        # denies writing /etc/polkit-1, so this typically just logs the fallback.
+        if os.path.exists(POLKIT_RULE):
+            return
+        try:
+            with open(POLKIT_RULE, "w") as f:
+                f.write(POLKIT_CONTENT)
+            decky.logger.info("installed polkit rule -> %s" % POLKIT_RULE)
+        except Exception as e:
+            decky.logger.error("polkit rule missing and can't auto-install — run "
+                               "'sudo ./decky-setup.sh' once: %s" % e)
+
     def _setenv_args(self):
         kv = {
             "FLICKER_MODE": str(self.settings["mode"]),
@@ -74,6 +106,7 @@ class Plugin:
             "FLICKER_EMA": str(self.settings["ema"]),
             "FLICKER_NORM_MAX": str(self.settings["norm_max"]),
             "FLICKER_FLOOR": str(self.settings.get("floor", 100)),
+            "FLICKER_STICK": str(self.settings.get("stick_gain", 0.4)),
             "FLICKER_FPS": str(int(self.settings["fps"])),
             "FLICKER_CONFIG": SETTINGS_PATH,        # engine re-reads this live for the sliders
         }
@@ -98,21 +131,27 @@ class Plugin:
     # ---------- callable from the frontend ----------
     async def start(self):
         self._stop_unit()
+        self._ensure_polkit()
         self.settings["enabled"] = True
         self._save()                                # write before launch so the engine sees it
-        try:
-            cmd = ["systemd-run", "--unit=" + UNIT, "--collect",
-                   *self._setenv_args(), PY, ENGINE]
-            r = subprocess.run(cmd, timeout=10, env=self._clean_env(),
-                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            if r.returncode != 0:
-                decky.logger.error("systemd-run failed: %s" % r.stderr.decode(errors="replace").strip())
+        cmd = ["systemd-run", "--unit=" + UNIT, "--collect",
+               *self._setenv_args(), PY, ENGINE]
+        for attempt in (1, 2):
+            try:
+                r = subprocess.run(cmd, timeout=10, env=self._clean_env(),
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                if r.returncode == 0:
+                    decky.logger.info("engine started as %s.service" % UNIT)
+                    return True
+                decky.logger.error("systemd-run failed (try %d): %s"
+                                   % (attempt, r.stderr.decode(errors="replace").strip()))
+            except Exception as e:
+                decky.logger.error("start failed: %s" % e)
                 return False
-            decky.logger.info("engine started as %s.service" % UNIT)
-            return True
-        except Exception as e:
-            decky.logger.error("start failed: %s" % e)
-            return False
+            # most likely polkit hasn't reloaded the freshly-written rule yet
+            self._ensure_polkit()
+            time.sleep(0.7)
+        return False
 
     async def stop(self):
         self._stop_unit()
