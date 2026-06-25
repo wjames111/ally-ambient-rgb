@@ -23,6 +23,9 @@ Config via environment variables (all optional):
     AMBIENT_EMA        smoothing, new-frame weight     (default 0.25)
     AMBIENT_SAT_BOOST  saturation multiplier           (default 1.5)
     AMBIENT_NORM_MAX   brightness of dominant channel  (default 210)
+    AMBIENT_CONFIG     path to a JSON file with live-tunable {sat_boost, ema,
+                       norm_max}; re-read while running (used by the Decky
+                       plugin's sliders). Unset = static env values.
 
 MIT licensed.  https://github.com/wjames111/ally-ambient-rgb
 """
@@ -38,13 +41,33 @@ def _env(name, default, cast=str):
         return default
 
 
-CARD      = _env("AMBIENT_CARD", "/dev/dri/card1")
-GRID      = _env("AMBIENT_GRID", 48, int)
-FPS       = _env("AMBIENT_FPS", 20, int)
-EMA       = _env("AMBIENT_EMA", 0.25, float)
-SAT_BOOST = _env("AMBIENT_SAT_BOOST", 1.5, float)
-NORM_MAX  = _env("AMBIENT_NORM_MAX", 210.0, float)
-BINS      = 24
+CARD = _env("AMBIENT_CARD", "/dev/dri/card1")
+GRID = _env("AMBIENT_GRID", 48, int)
+FPS  = _env("AMBIENT_FPS", 20, int)
+BINS = 24
+CONFIG = os.environ.get("AMBIENT_CONFIG")    # optional live-tuning JSON (Decky plugin)
+
+# Live-tunable params: env sets the initial value; AMBIENT_CONFIG overrides at runtime.
+CFG = {
+    "sat_boost": _env("AMBIENT_SAT_BOOST", 1.5, float),
+    "ema":       _env("AMBIENT_EMA", 0.25, float),
+    "norm_max":  _env("AMBIENT_NORM_MAX", 210.0, float),
+}
+
+
+def refresh_cfg():
+    if not CONFIG:
+        return
+    try:
+        with open(CONFIG) as f:
+            d = json.load(f)
+        for k in ("sat_boost", "ema", "norm_max"):
+            if k in d:
+                CFG[k] = float(d[k])
+    except Exception:
+        pass
+
+
 TOKEN_PATH = "/tmp/hhd/token"
 API = "http://127.0.0.1:5335/api/v1/state"
 
@@ -66,7 +89,7 @@ def hhd_rgb_mode(mode):
         pass
 
 
-if "--restore" in sys.argv:          # systemd ExecStopPost: hand the LEDs back to HHD
+if "--restore" in sys.argv:          # systemd ExecStopPost / Decky stop: hand LEDs back to HHD
     hhd_rgb_mode("solid")
     sys.exit(0)
 
@@ -127,17 +150,17 @@ def dominant_color(a):
 
 
 def vivid(col):
-    """Normalize a color to be bright + saturated.  Dim colors render as a
-    muddy teal on the rings (hardware color cast at low PWM), so we always send
-    a vivid value."""
+    """Normalize to bright + saturated.  Dim colors render as a muddy teal on
+    the rings (hardware color cast at low PWM), so we always send a vivid
+    value."""
     r, g, b = float(col[0]), float(col[1]), float(col[2])
     m = max(r, g, b)
     if m < 1:
         return 0.0, 0.0, 0.0
-    scale = NORM_MAX / m
+    scale = CFG["norm_max"] / m
     r, g, b = r * scale, g * scale, b * scale
     hh, ss, vv = colorsys.rgb_to_hsv(min(1.0, r/255.0), min(1.0, g/255.0), min(1.0, b/255.0))
-    ss = min(1.0, ss * SAT_BOOST)
+    ss = min(1.0, ss * CFG["sat_boost"])
     r, g, b = colorsys.hsv_to_rgb(hh, ss, vv)
     return r * 255, g * 255, b * 255
 
@@ -159,14 +182,19 @@ hhd_rgb_mode("disabled")             # take sole control of the lightbar
 def run_once():
     p = subprocess.Popen(FF, stdout=subprocess.PIPE)
     ema = None
+    n = 0
     try:
         while True:
             buf = p.stdout.read(NB)
             if len(buf) < NB:
                 return
+            if n % 10 == 0:              # re-read live config a couple times a second
+                refresh_cfg()
+            n += 1
             a = np.frombuffer(buf, np.uint8).reshape(GRID, GRID, 3).astype(np.float32)
             col = dominant_color(a)
-            ema = col if ema is None else EMA * col + (1 - EMA) * ema
+            e = CFG["ema"]
+            ema = col if ema is None else e * col + (1 - e) * ema
             R, G, B = vivid(ema)
             try:
                 set_led(R, G, B)         # every frame, to hold against the lightbar default

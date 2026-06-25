@@ -1,0 +1,11 @@
+{
+  "name": "Ally Ambient RGB",
+  "author": "William James",
+  "flags": ["_root"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["root", "rgb", "lighting", "handheld"],
+    "description": "Real-time ambient lighting: the controller's RGB joystick rings follow the dominant color on screen, in games and on the desktop.",
+    "image": "https://opengraph.githubassets.com/1/wjames111/ally-ambient-rgb"
+  }
+}
