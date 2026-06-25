@@ -26,17 +26,19 @@ and a **standalone systemd service**.
 ```
 ffmpeg kmsgrab (DRM scanout)
   → VAAPI GPU detile + downscale to 48×48
-  → per region: dominant-hue pick  (saturation² × value weighted histogram)
-  → vivid-normalize                (scale dominant channel up, boost saturation)
+  → per region: vibrancy-weighted average  (saturated/bright pixels dominate)
+  → brightness tracks the scene            (dark zones dim to a bias-light floor)
   → write the Aura RGB zones over HID
 ```
 
 The screen is captured from the DRM scanout (works under gamescope / Game Mode),
-detiled and shrunk on the GPU, then — per region — reduced to a single
-**prominent** color. A plain average comes out a muddy grey, so instead it bins
-pixels by hue weighted by `saturation² × value` and locks onto the most colorful
-region. Each color is normalized to a bright, saturated value and written to the
-matching **Aura RGB zone** on the controller's MCU over HID.
+detiled and shrunk on the GPU, then — per region — averaged with each pixel
+weighted by `saturation² × value`. A plain average comes out a muddy grey; this
+vibrancy weighting lets a vivid accent (neon grass against dark rock) pull the
+color the way your eye does, without a single bright pixel strobing the whole
+ring. Brightness follows the scene — bright scenes glow bright, dark scenes dim
+to a low bias-light floor instead of switching off — and the result is smoothed
+over time, then written to the matching **Aura RGB zone** on the MCU over HID.
 
 Two details that make it robust:
 
@@ -99,7 +101,8 @@ Set these env vars in the `[Service]` block of
 | `FLICKER_MODE`      | `unified`        | `unified` / `split` / `quad`              |
 | `FLICKER_SAT_BOOST` | `1.5`            | Saturation multiplier (vividness)         |
 | `FLICKER_EMA`       | `0.25`           | Smoothing — lower = smoother/slower       |
-| `FLICKER_NORM_MAX`  | `210`            | Brightness of the dominant channel        |
+| `FLICKER_NORM_MAX`  | `235`            | Max brightness (when the scene is bright) |
+| `FLICKER_FLOOR`     | `100`            | Bias-light floor (dark scenes; never off) |
 | `FLICKER_FPS`       | `20`             | Capture / update rate                     |
 | `FLICKER_GRID`      | `48`             | Downscale grid size                       |
 | `FLICKER_CARD`      | `/dev/dri/card1` | DRM device for capture                    |

@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """Flicker — real-time ambient lighting for the ASUS ROG Ally.
 
-Samples the screen, picks the dominant vivid color(s), and drives the
+Samples the screen, computes a vibrancy-weighted color per zone, and drives the
 controller's RGB joystick rings to match, ~20 fps.  Three modes:
 
   unified  one color from the whole screen -> both rings
@@ -28,7 +28,14 @@ Config via environment variables (all optional):
 MIT licensed.  https://github.com/wjames111/flicker
 """
 import os, sys, time, json, colorsys, subprocess, threading, urllib.request
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    sys.stderr.write(
+        "flicker: numpy is required but isn't installed for %s\n"
+        "  Install it for that interpreter, e.g.:  pip install --user numpy hid\n"
+        % sys.executable)
+    raise
 
 try:
     import hid  # hidapi — used only to locate the Aura RGB interface
@@ -47,7 +54,6 @@ def _env(name, default, cast=str):
 CARD = _env("FLICKER_CARD", "/dev/dri/card1")
 GRID = _env("FLICKER_GRID", 48, int)
 FPS  = _env("FLICKER_FPS", 20, int)
-BINS = 24
 CONFIG = os.environ.get("FLICKER_CONFIG")
 
 # Live-tunable params: env sets the initial value; FLICKER_CONFIG overrides at runtime.
@@ -55,7 +61,8 @@ CFG = {
     "mode":      _env("FLICKER_MODE", "unified"),
     "sat_boost": _env("FLICKER_SAT_BOOST", 1.5, float),
     "ema":       _env("FLICKER_EMA", 0.25, float),
-    "norm_max":  _env("FLICKER_NORM_MAX", 210.0, float),
+    "norm_max":  _env("FLICKER_NORM_MAX", 235.0, float),   # brightness when the scene is bright
+    "floor":     _env("FLICKER_FLOOR", 100.0, float),      # bias-light floor for dark scenes (never off)
 }
 
 
@@ -67,7 +74,7 @@ def refresh_cfg():
             d = json.load(f)
         if d.get("mode") in ("unified", "split", "quad"):
             CFG["mode"] = d["mode"]
-        for k in ("sat_boost", "ema", "norm_max"):
+        for k in ("sat_boost", "ema", "norm_max", "floor"):
             if k in d:
                 CFG[k] = float(d[k])
     except Exception:
@@ -181,45 +188,27 @@ class AllyRGB:
 
 
 # ---------- color extraction ----------
-def dominant_color(a):
-    """a:(H,W,3) float32 0-255 -> the prominent vivid RGB (0-255).  Hue
-    histogram weighted by saturation^2 * value; a plain mean is muddy grey."""
-    px = a.reshape(-1, 3) / 255.0
-    r, g, b = px[:, 0], px[:, 1], px[:, 2]
-    mx = px.max(1); mn = px.min(1); diff = mx - mn
-    v = mx
-    s = np.where(mx > 1e-9, diff / np.maximum(mx, 1e-9), 0.0)
-    h = np.zeros_like(mx); nz = diff > 1e-9
-    rm = nz & (mx == r); gm = nz & (mx == g) & ~rm; bm = nz & (mx == b) & ~rm & ~gm
-    h[rm] = ((g[rm] - b[rm]) / diff[rm]) % 6.0
-    h[gm] = ((b[gm] - r[gm]) / diff[gm]) + 2.0
-    h[bm] = ((r[bm] - g[bm]) / diff[bm]) + 4.0
-    h = (h / 6.0) % 1.0
-    w = (s ** 2) * v
-    if w.sum() < 1e-3:
-        k = max(1, v.size // 10)
-        return px[np.argpartition(v, -k)[-k:]].mean(0) * 255
-    bi = np.minimum((h * BINS).astype(np.int64), BINS - 1)
-    hist = np.bincount(bi, weights=w, minlength=BINS)
-    dom = int(hist.argmax())
-    near = (np.abs(bi - dom) <= 1) | (np.abs(bi - dom) >= BINS - 1)
-    sw = w[near]
-    return (px[near] * sw[:, None]).sum(0) / sw.sum() * 255
+def zone_color(a):
+    """a:(H,W,3) -> LED RGB (numpy [3], 0-255).
 
-
-def vivid(col):
-    """Normalize to bright + saturated — dim colors render as muddy teal on the
-    rings, so never send a dark value."""
-    r, g, b = float(col[0]), float(col[1]), float(col[2])
-    m = max(r, g, b)
-    if m < 1:
-        return 0.0, 0.0, 0.0
-    scale = CFG["norm_max"] / m
-    r, g, b = r * scale, g * scale, b * scale
-    hh, ss, vv = colorsys.rgb_to_hsv(min(1.0, r/255.0), min(1.0, g/255.0), min(1.0, b/255.0))
+    Vibrancy-weighted average: each pixel is weighted by saturation² × value, so
+    saturated/bright pixels dominate — a mostly-grey zone with a vivid accent
+    glows that accent's color (not a muddy true-average), while brightness tracks
+    the scene so dark zones dim to a bias-light floor instead of switching off."""
+    px = a.reshape(-1, 3).astype(np.float32) / 255.0
+    mx = px.max(1); mn = px.min(1)
+    val = mx
+    sat = np.where(mx > 1e-6, (mx - mn) / np.maximum(mx, 1e-6), 0.0)
+    w = (sat ** 2) * val + 1e-3                          # vibrancy weighting (+tiny base)
+    ws = w.sum()
+    avg = (px * w[:, None]).sum(0) / ws                  # vivid-weighted average color
+    scene = float((val * w).sum() / ws)                  # vivid-weighted brightness (eye-drawn)
+    hh, ss, _ = colorsys.rgb_to_hsv(float(min(1.0, avg[0])), float(min(1.0, avg[1])), float(min(1.0, avg[2])))
     ss = min(1.0, ss * CFG["sat_boost"])
-    r, g, b = colorsys.hsv_to_rgb(hh, ss, vv)
-    return r * 255, g * 255, b * 255
+    floor = CFG["floor"] / 255.0
+    top = CFG["norm_max"] / 255.0
+    bright = max(0.0, min(1.0, floor + (top - floor) * scene))   # bias-light floor .. top
+    return np.array(colorsys.hsv_to_rgb(hh, ss, bright)) * 255.0
 
 
 # ---------- capture ----------
@@ -284,10 +273,10 @@ def run_once(rgb):
                 ema = {}; last = {}; cur_mode = mode
             a = np.frombuffer(buf, np.uint8).reshape(GRID, GRID, 3).astype(np.float32)
             for key, zones, region in _regions(mode, a):
-                col = dominant_color(region)
+                col = zone_color(region)
                 e = CFG["ema"]
                 ema[key] = col if ema.get(key) is None else e * col + (1 - e) * ema[key]
-                R, G, B = vivid(ema[key])
+                R, G, B = ema[key]
                 cur = (int(R), int(G), int(B))
                 lk = last.get(key)
                 if force or lk is None or abs(cur[0]-lk[0]) > THRESH or abs(cur[1]-lk[1]) > THRESH or abs(cur[2]-lk[2]) > THRESH:

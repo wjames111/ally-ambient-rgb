@@ -90,9 +90,14 @@ class Plugin:
         self.settings["enabled"] = True
         self._save()                                # write before spawn so the engine sees it
         try:
+            # Route the engine's stdout/stderr to a logfile instead of /dev/null,
+            # so import errors and "RGB interface not found" are actually visible.
+            logpath = os.path.join(decky.DECKY_PLUGIN_LOG_DIR, "engine.log")
+            log = open(logpath, "a")
             self.proc = subprocess.Popen([PY, ENGINE], env=self._engine_env(),
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            decky.logger.info("engine started (pid=%s)" % self.proc.pid)
+                                         stdout=log, stderr=subprocess.STDOUT)
+            log.close()                             # the child keeps its own copy of the fd
+            decky.logger.info("engine started (pid=%s); output -> %s" % (self.proc.pid, logpath))
             return True
         except Exception as e:
             decky.logger.error("start failed: %s" % e)
@@ -107,6 +112,10 @@ class Plugin:
         return True
 
     async def is_running(self):
+        # Surface an engine that started but died (e.g. a missing dependency) so
+        # it doesn't silently look "on"; the reason is in engine.log.
+        if self.proc is not None and self.proc.poll() is not None and self.settings.get("enabled"):
+            decky.logger.error("engine exited (code=%s); see engine.log" % self.proc.returncode)
         return self._running()
 
     async def get_settings(self):
