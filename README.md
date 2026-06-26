@@ -9,13 +9,15 @@ capture + downscale done on the GPU so it's nearly free.
 
 Three modes:
 
-- **Unified** — one color from the whole screen → both rings
-- **Split** — left half → left ring, right half → right ring
+- **Unified** — one color from the whole screen → both rings. **Zero setup** —
+  it just works the moment you enable it.
+- **Split** — left half → left ring, right half → right ring *(opt-in)*
 - **Quad** — each screen corner → the matching ring half (4 zones; each ring
-  shows two colors)
+  shows two colors) *(opt-in)*
 
-Ships two ways: a **Decky Loader plugin** (mode selector + sliders in Game Mode)
-and a **standalone systemd service**.
+Unified needs **no setup at all**; Split/Quad need a one-time `sudo` (see Install).
+Ships as a **Decky Loader plugin** (mode selector + sliders in Game Mode), with a
+**standalone systemd service** also included for non-Decky use.
 
 > 📸 *Add a short clip/photo of the rings reacting to a game here.*
 
@@ -24,12 +26,16 @@ and a **standalone systemd service**.
 ## How it works
 
 ```
-ffmpeg kmsgrab (DRM scanout)
-  → VAAPI GPU detile + downscale to 48×48
-  → per region: vibrancy-weighted average  (saturated/bright pixels dominate)
-  → brightness tracks the scene            (dark zones dim to a bias-light floor)
-  → write the Aura RGB zones over HID
+Unified (zero-setup):  gamescope PipeWire node → GPU downscale → one vibrancy-
+                       weighted color → Handheld Daemon's HSV API   (no root)
+Split / Quad (opt-in): kmsgrab DRM scanout → GPU downscale → per-region color →
+                       Aura RGB MCU over HID                         (root)
 ```
+
+Two engines share the same color math and differ only in *how* they reach the
+rings. **Unified** asks Handheld Daemon to set the color — a privilege HHD already
+has — so it needs nothing. **Split/Quad** address the four LED zones individually,
+which only the Aura MCU can do, and that's root-locked — hence the one-time unlock.
 
 The screen is captured from the DRM scanout (works under gamescope / Game Mode),
 detiled and shrunk on the GPU, then — per region — averaged with each pixel
@@ -63,22 +69,30 @@ cd flicker
 pnpm i && pnpm build          # needs Node 18+ and pnpm v9
 PLUGIN=~/homebrew/plugins/flicker
 sudo mkdir -p "$PLUGIN"
-sudo cp -r plugin.json package.json main.py flicker.py dist "$PLUGIN"/
-sudo ./decky-setup.sh         # one-time: installs the polkit rule (see below)
+sudo cp -r plugin.json package.json main.py flicker.py flicker_unified.py dist "$PLUGIN"/
 sudo systemctl restart plugin_loader
 ```
 
-Then open the **Decky** menu in Game Mode → **Flicker**, turn it on, and pick a
-**Mode** (Unified / Split / Quad). The panel also has live **Vividness**,
+Open the **Decky** menu in Game Mode → **Flicker** and turn it on. **Unified mode
+works immediately — no setup, no root.** The panel has live **Vividness**,
 **Reactivity**, **Brightness**, and **Joystick boost** sliders.
 
-**Why the setup step:** Decky runs plugins as root but with *zero* Linux
-capabilities, and screen capture (kmsgrab) needs `CAP_SYS_ADMIN`. So the plugin
-runs the capture engine as a transient **systemd** unit (which gets full caps),
-and `decky-setup.sh` installs a small polkit rule letting the plugin manage just
-that one unit. This is also why Flicker isn't a one-click Decky-*store* plugin —
-a store install can't grant capture permissions. The **standalone** option below
-needs none of this.
+### Unlock Split / Quad (optional)
+
+The per-zone modes need a one-time unlock:
+
+```bash
+sudo ./decky-setup.sh         # installs a polkit rule + unlock marker
+```
+
+Reopen the Flicker panel — the **Mode** dropdown now offers Split / Quad.
+
+**Why only per-zone needs setup:** Unified drives the rings through Handheld
+Daemon's API (a privilege HHD already has), so it needs nothing. Split/Quad
+address the four LED zones individually — writing the Aura MCU directly over
+hidraw (HHD locks it to root) and capturing via kmsgrab (`CAP_SYS_ADMIN`) — so
+that engine runs as a root **systemd** unit. `decky-setup.sh` installs a polkit
+rule letting the non-root plugin manage just that one unit.
 
 ## Install — standalone (no Decky)
 
@@ -96,12 +110,13 @@ journalctl -u flicker -f         # logs
 
 ## Requirements
 
-- A **ROG Ally / Ally X** running **Handheld Daemon** (HHD) — Flicker drives the
-  Asus Aura RGB MCU directly, and asks HHD to release the LEDs while it runs.
-- `ffmpeg` with `kmsgrab` + **VAAPI** (AMD APU — the Ally's default).
-- `python3` with `numpy` and `hid` (hidapi).
-- Runs as **root** (kmsgrab and the RGB hidraw both require it). The Decky plugin
-  declares the `_root` flag; the standalone runs as a root systemd service.
+- A **ROG Ally / Ally X** running **Handheld Daemon** (HHD).
+- **Unified:** GStreamer (`pipewiresrc` + the `va` plugin) and `python3` / `numpy`.
+  Captures gamescope's PipeWire node and drives the rings through HHD's API — no
+  root, no caps, no setup.
+- **Split/Quad:** `ffmpeg` with `kmsgrab` + VAAPI, plus `python3` with `hid`
+  (hidapi). Writes the Aura MCU directly, so it runs as a root systemd unit
+  (unlocked once by `decky-setup.sh`); the standalone service path also runs as root.
 
 On Bazzite these are generally already present.
 
