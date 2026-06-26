@@ -19,6 +19,23 @@ Unified needs **no setup at all**; Split/Quad need a one-time `sudo` (see Instal
 Ships as a **Decky Loader plugin** (mode selector + sliders in Game Mode), with a
 **standalone systemd service** also included for non-Decky use.
 
+## Install (3 steps)
+
+```bash
+# 1. build
+git clone https://github.com/wjames111/flicker.git && cd flicker
+pnpm i && pnpm build                        # needs Node 18+ and pnpm v9
+
+# 2. sideload into Decky
+sudo mkdir -p ~/homebrew/plugins/flicker
+sudo cp -r plugin.json package.json main.py flicker.py flicker_unified.py decky-setup.sh dist ~/homebrew/plugins/flicker/
+sudo systemctl restart plugin_loader
+```
+
+**3.** Open **Decky → Flicker → Enabled**. That's it — **Unified mode runs with
+zero setup**. *(Optional: `sudo ./decky-setup.sh` unlocks the per-zone Split / Quad
+modes.)*
+
 > 📸 *Add a short clip/photo of the rings reacting to a game here.*
 
 ---
