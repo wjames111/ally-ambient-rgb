@@ -34,7 +34,7 @@ function Content() {
   const [mode, setModeState] = useState<string>("unified");
   const [sat, setSat] = useState(1.5);
   const [ema, setEma] = useState(0.25);
-  const [bright, setBright] = useState(210);
+  const [bright, setBright] = useState(120);
   const [stick, setStick] = useState(0.4);
 
   useEffect(() => {
@@ -127,7 +127,7 @@ function Content() {
         <SliderField
           label="Brightness"
           value={bright}
-          min={120}
+          min={0}
           max={255}
           step={5}
           showValue

@@ -108,7 +108,9 @@ def unified_hsv(a):
     scene = float((val * w).sum() / ws)
     hh, ss, _ = colorsys.rgb_to_hsv(float(min(1, avg[0])), float(min(1, avg[1])), float(min(1, avg[2])))
     ss = min(1.0, ss * CFG["sat_boost"])
-    floor = CFG["floor"] / 255.0
+    # clamp the bias-light floor to the (slider) top, so a low Brightness reaches
+    # true off (0) instead of being held up by the floor.
+    floor = min(CFG["floor"], CFG["norm_max"]) / 255.0
     top = CFG["norm_max"] / 255.0
     bright = max(0.0, min(1.0, floor + (top - floor) * scene))
     return hh, ss, bright

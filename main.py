@@ -26,7 +26,7 @@ PY = "/usr/bin/python3"
 UNIT = "flicker-engine"
 
 DEFAULTS = {"enabled": False, "mode": "unified", "sat_boost": 1.5, "ema": 0.25,
-            "norm_max": 235, "floor": 100, "fps": 20, "stick_gain": 0.4}
+            "norm_max": 120, "floor": 100, "fps": 20, "stick_gain": 0.4}
 TUNABLE = ("sat_boost", "ema", "norm_max", "floor", "stick_gain")
 
 

@@ -210,7 +210,7 @@ def zone_color(a, boost=0.0):
     scene = float((val * w).sum() / ws)                  # vivid-weighted brightness (eye-drawn)
     hh, ss, _ = colorsys.rgb_to_hsv(float(min(1.0, avg[0])), float(min(1.0, avg[1])), float(min(1.0, avg[2])))
     ss = min(1.0, ss * CFG["sat_boost"])
-    floor = CFG["floor"] / 255.0
+    floor = min(CFG["floor"], CFG["norm_max"]) / 255.0          # 0 brightness reaches true off
     top = CFG["norm_max"] / 255.0
     bright = max(0.0, min(1.0, floor + (top - floor) * scene))   # bias-light floor .. top
     if boost > 0.0:
