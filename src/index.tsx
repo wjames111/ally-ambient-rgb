@@ -25,10 +25,12 @@ const isRunning = callable<[], boolean>("is_running");
 const getSettings = callable<[], Settings>("get_settings");
 const setSetting = callable<[key: string, value: number], boolean>("set_setting");
 const setMode = callable<[mode: string], boolean>("set_mode");
+const canPerZone = callable<[], boolean>("can_per_zone");
 
 function Content() {
   const [ready, setReady] = useState(false);
   const [on, setOn] = useState(false);
+  const [perZone, setPerZone] = useState(false);
   const [mode, setModeState] = useState<string>("unified");
   const [sat, setSat] = useState(1.5);
   const [ema, setEma] = useState(0.25);
@@ -43,6 +45,7 @@ function Content() {
       setEma(s.ema);
       setBright(s.norm_max);
       setStick(s.stick_gain);
+      setPerZone(await canPerZone());
       setOn(await isRunning());
       setReady(true);
     })();
@@ -57,6 +60,14 @@ function Content() {
     }
   };
 
+  const modeOptions = perZone
+    ? [
+        { data: "unified", label: "Unified (whole screen)" },
+        { data: "split", label: "Split (left / right)" },
+        { data: "quad", label: "Quad (four corners)" },
+      ]
+    : [{ data: "unified", label: "Unified (whole screen)" }];
+
   return (
     <PanelSection title="Ambient Lighting">
       <PanelSectionRow>
@@ -70,13 +81,12 @@ function Content() {
       <PanelSectionRow>
         <DropdownItem
           label="Mode"
-          rgOptions={[
-            { data: "unified", label: "Unified (whole screen)" },
-            { data: "split", label: "Split (left / right)" },
-            { data: "quad", label: "Quad (four corners)" },
-          ]}
+          description={
+            perZone ? undefined : "Split / Quad need a one-time `sudo ./decky-setup.sh`"
+          }
+          rgOptions={modeOptions}
           selectedOption={mode}
-          disabled={!ready}
+          disabled={!ready || !perZone}
           onChange={(opt) => {
             setModeState(opt.data as string);
             setMode(opt.data as string);
